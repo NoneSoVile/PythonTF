@@ -3,7 +3,40 @@ import tensorflow as tf
 import numpy as np
 import os
 import time
+import argparse
 
+def get_directory_part(path):
+    """
+    Returns the directory part of the specified path.
+    
+    :param path: str, the full or relative path
+    :return: str, the directory part of the path
+    """
+    directory_part = os.path.dirname(path)
+    return directory_part
+  
+parser = argparse.ArgumentParser(description='rnn text predict')
+
+EPOCHS = 2
+saved_weights_path = './rnn_saved_weights/rnn_test_weights.h5'
+saved_model_path = 'rnn_saved_model'
+parser.add_argument('--epochs', default=EPOCHS, type=int)
+parser.add_argument('--savedweights', default=saved_weights_path, type=str)
+parser.add_argument('--savedmodel', default=saved_model_path, type=str)
+args = parser.parse_args()
+EPOCHS = int(args.epochs)
+saved_weights_path = args.savedweights
+saved_model_path = args.savedmodel
+
+# Check if the directory already exists
+weightspath = get_directory_part(saved_weights_path)
+if not os.path.exists(weightspath):
+    # Create the directory
+    os.makedirs(weightspath)
+    print(f'Directory "{weightspath}" created.')
+else:
+    print(f'Directory "{weightspath}" already exists.')
+    
 def text_from_ids(ids):
     return tf.strings.reduce_join(chars_from_ids(ids), axis=-1)
 
@@ -89,31 +122,39 @@ rnn_units = 1024
 
 
 class MyModel(tf.keras.Model):
-  def __init__(self, vocab_size, embedding_dim, rnn_units):
-    super().__init__(self)
-    self.embedding = tf.keras.layers.Embedding(vocab_size, embedding_dim)
-    self.gru = tf.keras.layers.GRU(rnn_units,
-                                   return_sequences=True,
-                                   return_state=True)
-    self.dense = tf.keras.layers.Dense(vocab_size)
+    def __init__(self):
+        super().__init__(self)
+        self.vocab_size = vocab_size
+        self.embedding_dim = embedding_dim
+        self.rnn_units = rnn_units
+        self.embedding = tf.keras.layers.Embedding(vocab_size, embedding_dim)
+        self.gru = tf.keras.layers.GRU(rnn_units,
+                                      return_sequences=True,
+                                      return_state=True)
+        self.dense = tf.keras.layers.Dense(vocab_size)
+      
 
-  def call(self, inputs, states=None, return_state=False, training=False):
-    x = inputs
-    x = self.embedding(x, training=training)
-    if states is None:
-      states = self.gru.get_initial_state(x)
-    x, states = self.gru(x, initial_state=states, training=training)
-    x = self.dense(x, training=training)
+    def call(self, inputs, states=None, return_state=False, training=False):
+      x = inputs
+      x = self.embedding(x, training=training)
+      if states is None:
+        states = self.gru.get_initial_state(x)
+      x, states = self.gru(x, initial_state=states, training=training)
+      x = self.dense(x, training=training)
 
-    if return_state:
-      return x, states
-    else:
-      return x
-    
-model = MyModel(
-    vocab_size=vocab_size,
-    embedding_dim=embedding_dim,
-    rnn_units=rnn_units)
+      if return_state:
+        return x, states
+      else:
+        return x
+      
+  
+if os.path.exists(saved_model_path):
+    model = tf.keras.models.load_model(saved_model_path, custom_objects={'MyModel': MyModel})
+elif os.path.exists(saved_weights_path):
+    model = MyModel()
+    model.load_weights(saved_weights_path)
+else:
+  model = MyModel()
 print(f"model configuration.. vocab_size : {vocab_size}, embedding_dim : {embedding_dim}, rnn_units: {rnn_units}")
 
 for input_example_batch, target_example_batch in dataset.take(1):
@@ -148,8 +189,15 @@ checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
     filepath=checkpoint_prefix,
     save_weights_only=True)
 
-EPOCHS = 20
+
+
+
+
 history = model.fit(dataset, epochs=EPOCHS, callbacks=[checkpoint_callback])
+model.save_weights(saved_weights_path)
+model.save(saved_model_path)
+print(f"weights saved to {saved_weights_path}.")
+print(f"model saved to {saved_model_path}.")
 
 class OneStep(tf.keras.Model):
   def __init__(self, model, chars_from_ids, ids_from_chars, temperature=1.0):
@@ -197,14 +245,17 @@ class OneStep(tf.keras.Model):
   
 
 one_step_model = OneStep(model, chars_from_ids, ids_from_chars)
+
 start = time.time()
 states = None
 next_char = tf.constant(['ROMEO:'])
 result = [next_char]
 
 for n in range(1000):
-  next_char, states = one_step_model.generate_one_step(next_char, states=states)
-  result.append(next_char)
+    next_char, states = one_step_model.generate_one_step(next_char, states=states)
+    result.append(next_char)
+
+
 
 result = tf.strings.join(result)
 end = time.time()
