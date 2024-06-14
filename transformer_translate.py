@@ -22,13 +22,16 @@ parser = argparse.ArgumentParser(description='transformer text predict')
 EPOCHS = 2
 saved_weights_path = './transformer_saved_weights/transformer_test_weights.h5'
 saved_model_path = '' #'transformer_saved_model'
+ds_name = 'ted_hrlr_translate/pt_to_en'   #'wmt19_translate/zh-en'
 parser.add_argument('--epochs', default=EPOCHS, type=int)
 parser.add_argument('--savedweights', default=saved_weights_path, type=str)
 parser.add_argument('--savedmodel', default=saved_model_path, type=str)
+parser.add_argument('--dsname', default=ds_name, type=str)
 args = parser.parse_args()
 EPOCHS = int(args.epochs)
 saved_weights_path = args.savedweights
 saved_model_path = args.savedmodel
+ds_name = args.dsname
 # Check if the directory already exists
 weightspath = get_directory_part(saved_weights_path)
 if not os.path.exists(weightspath):
@@ -48,7 +51,7 @@ class BaseAttention(tf.keras.layers.Layer):
     self.add = tf.keras.layers.Add()
     
     
-examples, metadata = tfds.load('ted_hrlr_translate/pt_to_en',
+examples, metadata = tfds.load(ds_name,
                                with_info=True,
                                as_supervised=True, data_dir='./translate_data')
 
