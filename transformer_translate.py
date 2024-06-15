@@ -21,7 +21,7 @@ def get_directory_part(path):
 parser = argparse.ArgumentParser(description='transformer text predict')
 EPOCHS = 2
 saved_weights_path = './transformer_saved_weights/transformer_test_weights.h5'
-saved_model_path = '' #'transformer_saved_model'
+saved_model_path = 'transformer_saved_model'
 ds_name = 'ted_hrlr_translate/pt_to_en'   #'wmt19_translate/zh-en'
 parser.add_argument('--epochs', default=EPOCHS, type=int)
 parser.add_argument('--savedweights', default=saved_weights_path, type=str)
@@ -205,6 +205,7 @@ class PositionalEmbedding(tf.keras.layers.Layer):
   def __init__(self, vocab_size, d_model):
     super().__init__()
     self.d_model = d_model
+    self.vocab_size = vocab_size
     self.embedding = tf.keras.layers.Embedding(vocab_size, d_model, mask_zero=True) 
     self.pos_encoding = positional_encoding(length=2048, depth=d_model)
 
@@ -218,6 +219,17 @@ class PositionalEmbedding(tf.keras.layers.Layer):
     x *= tf.math.sqrt(tf.cast(self.d_model, tf.float32))
     x = x + self.pos_encoding[tf.newaxis, :length, :]
     return x
+  def get_config(self):
+        config = super(PositionalEmbedding, self).get_config()
+        config.update({
+            'd_model': self.d_model,
+            'vocab_size': self.vocab_size
+        })
+        return config
+
+  @classmethod
+  def from_config(cls, config):
+        return cls(**config)
   
   
 embed_pt = PositionalEmbedding(vocab_size=tokenizers.pt.get_vocab_size().numpy(), d_model=512)
@@ -233,8 +245,10 @@ class BaseAttention(tf.keras.layers.Layer):
     self.layernorm = tf.keras.layers.LayerNormalization()
     self.add = tf.keras.layers.Add()
     
+    
 class CrossAttention(BaseAttention):
   def call(self, x, context):
+    self.x = x
     attn_output, attn_scores = self.mha(
         query=x,
         key=context,
@@ -248,6 +262,13 @@ class CrossAttention(BaseAttention):
     x = self.layernorm(x)
 
     return x
+  def get_config(self):
+        config = super(CrossAttention, self).get_config()
+        return config
+
+  @classmethod
+  def from_config(cls, config):
+        return cls(**config)
 
 sample_ca = CrossAttention(num_heads=2, key_dim=512)
 print("====================encoder===============")
@@ -257,6 +278,7 @@ print(sample_ca(en_emb, pt_emb).shape)
 
 class GlobalSelfAttention(BaseAttention):
   def call(self, x):
+    self.x = x
     attn_output = self.mha(
         query=x,
         value=x,
@@ -264,6 +286,14 @@ class GlobalSelfAttention(BaseAttention):
     x = self.add([x, attn_output])
     x = self.layernorm(x)
     return x
+  def get_config(self):
+        config = super(GlobalSelfAttention, self).get_config()
+        
+        return config
+
+  @classmethod
+  def from_config(cls, config):
+        return cls(**config)
 
 sample_gsa = GlobalSelfAttention(num_heads=2, key_dim=512)
 
@@ -273,6 +303,7 @@ print(sample_gsa(pt_emb).shape)
 
 class CausalSelfAttention(BaseAttention):
   def call(self, x):
+    self.x = x
     attn_output = self.mha(
         query=x,
         value=x,
@@ -281,6 +312,14 @@ class CausalSelfAttention(BaseAttention):
     x = self.add([x, attn_output])
     x = self.layernorm(x)
     return x
+  def get_config(self):
+        config = super(CausalSelfAttention, self).get_config()
+
+        return config
+
+  @classmethod
+  def from_config(cls, config):
+        return cls(**config)
 
 sample_csa = CausalSelfAttention(num_heads=2, key_dim=512)
 
@@ -295,6 +334,9 @@ tf.reduce_max(abs(out1 - out2)).numpy()
 class FeedForward(tf.keras.layers.Layer):
   def __init__(self, d_model, dff, dropout_rate=0.1):
     super().__init__()
+    self.d_model = d_model
+    self.dff = dff
+    self.dropout_rate = dropout_rate
     self.seq = tf.keras.Sequential([
       tf.keras.layers.Dense(dff, activation='relu'),
       tf.keras.layers.Dense(d_model),
@@ -307,6 +349,18 @@ class FeedForward(tf.keras.layers.Layer):
     x = self.add([x, self.seq(x)])
     x = self.layer_norm(x) 
     return x
+  def get_config(self):
+        config = super(FeedForward, self).get_config()
+        config.update({
+            'context': self.d_model,
+            'dff': self.dff,
+            'dropout_rate': self.dropout_rate
+        })
+        return config
+
+  @classmethod
+  def from_config(cls, config):
+        return cls(**config)
 
 sample_ffn = FeedForward(512, 2048)
 
@@ -316,7 +370,10 @@ print(sample_ffn(en_emb).shape)
 class EncoderLayer(tf.keras.layers.Layer):
   def __init__(self,*, d_model, num_heads, dff, dropout_rate=0.1):
     super().__init__()
-
+    self.d_model = d_model
+    self.num_heads = num_heads
+    self.dff = dff
+    self.dropout_rate = dropout_rate
     self.self_attention = GlobalSelfAttention(
         num_heads=num_heads,
         key_dim=d_model,
@@ -328,6 +385,19 @@ class EncoderLayer(tf.keras.layers.Layer):
     x = self.self_attention(x)
     x = self.ffn(x)
     return x
+  def get_config(self):
+        config = super(EncoderLayer, self).get_config()
+        config.update({
+            'd_model': self.d_model,
+            'num_heads': self.num_heads,
+            'dff': self.dff,
+            'dropout_rate': self.dropout_rate
+        })
+        return config
+
+  @classmethod
+  def from_config(cls, config):
+        return cls(**config)
 
 sample_encoder_layer = EncoderLayer(d_model=512, num_heads=8, dff=2048)
 
@@ -339,9 +409,12 @@ class Encoder(tf.keras.layers.Layer):
   def __init__(self, *, num_layers, d_model, num_heads,
                dff, vocab_size, dropout_rate=0.1):
     super().__init__()
-
+    self.num_heads = num_heads
     self.d_model = d_model
     self.num_layers = num_layers
+    self.vocab_size = vocab_size
+    self.dropout_rate = dropout_rate
+    self.dff = dff
 
     self.pos_embedding = PositionalEmbedding(
         vocab_size=vocab_size, d_model=d_model)
@@ -365,6 +438,23 @@ class Encoder(tf.keras.layers.Layer):
       x = self.enc_layers[i](x)
 
     return x  # Shape `(batch_size, seq_len, d_model)`.
+
+  def get_config(self):
+        config = super(Encoder, self).get_config()
+        config.update({
+            'd_model': self.d_model,
+            'num_heads': self.num_heads,
+            'dff': self.dff,
+            'vocab_size': self.vocab_size,
+            'dropout_rate': self.dropout_rate,
+            'num_layers': self.num_layers
+        })
+        return config
+
+  @classmethod
+  def from_config(cls, config):
+        return cls(**config)
+
 
 
 # Instantiate the encoder.
@@ -390,7 +480,11 @@ class DecoderLayer(tf.keras.layers.Layer):
                dff,
                dropout_rate=0.1):
     super(DecoderLayer, self).__init__()
-
+    self.num_heads = num_heads
+    self.d_model = d_model
+    self.dropout_rate = dropout_rate
+    self.dff = dff
+    
     self.causal_self_attention = CausalSelfAttention(
         num_heads=num_heads,
         key_dim=d_model,
@@ -413,6 +507,19 @@ class DecoderLayer(tf.keras.layers.Layer):
     x = self.ffn(x)  # Shape `(batch_size, seq_len, d_model)`.
     return x
 
+  def get_config(self):
+        config = super(DecoderLayer, self).get_config()
+        config.update({
+            'd_model': self.d_model,
+            'num_heads': self.num_heads,
+            'dff': self.dff,
+            'dropout_rate': self.dropout_rate,
+        })
+        return config
+  @classmethod
+  def from_config(cls, config):
+        return cls(**config)
+
 sample_decoder_layer = DecoderLayer(d_model=512, num_heads=8, dff=2048)
 
 sample_decoder_layer_output = sample_decoder_layer(
@@ -427,8 +534,11 @@ class Decoder(tf.keras.layers.Layer):
                dropout_rate=0.1):
     super(Decoder, self).__init__()
 
+    self.num_heads = num_heads
     self.d_model = d_model
     self.num_layers = num_layers
+    self.dropout_rate = dropout_rate
+    self.dff = dff
 
     self.pos_embedding = PositionalEmbedding(vocab_size=vocab_size,
                                              d_model=d_model)
@@ -453,6 +563,21 @@ class Decoder(tf.keras.layers.Layer):
 
     # The shape of x is (batch_size, target_seq_len, d_model).
     return x
+
+  def get_config(self):
+        config = super(Decoder, self).get_config()
+        config.update({
+            'd_model': self.d_model,
+            'num_heads': self.num_heads,
+            'dff': self.dff,
+            'dropout_rate': self.dropout_rate,
+            'num_layers': self.num_layers
+        })
+        return config
+  @classmethod
+  def from_config(cls, config):
+        return cls(**config)
+
 
 # Instantiate the decoder.
 sample_decoder = Decoder(num_layers=4,
@@ -555,24 +680,43 @@ class CustomSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
     return tf.math.rsqrt(self.d_model) * tf.math.minimum(arg1, arg2)
 
   def get_config(self):
-        config = {}
+      config = {}
+      if self.d_model is not None:
+          config["d_model"] = int(self.d_model)
+      if self.warmup_steps is not None:
+          config["warmup_steps"] = self.warmup_steps
+      return config
 
-        if saving_lib._ENABLED:
-            if self.d_model:
-                config["d_model"] = saving_lib.serialize_keras_object(
-                    self.d_model
-                )
-            if self.warmup_steps:
-                config["warmup_steps"] = saving_lib.serialize_keras_object(
-                    self.warmup_steps
-                )
-
-        
-        return config
 
   @classmethod
   def from_config(cls, config):
-        return cls(**config)
+         return cls(d_model=config.get("d_model"), warmup_steps=config.get("warmup_steps"))
+     
+def masked_loss(label, pred):
+  mask = label != 0
+  loss_object = tf.keras.losses.SparseCategoricalCrossentropy(
+    from_logits=True, reduction='none')
+  loss = loss_object(label, pred)
+
+  mask = tf.cast(mask, dtype=loss.dtype)
+  loss *= mask
+
+  loss = tf.reduce_sum(loss)/tf.reduce_sum(mask)
+  return loss
+
+
+def masked_accuracy(label, pred):
+  pred = tf.argmax(pred, axis=2)
+  label = tf.cast(label, pred.dtype)
+  match = label == pred
+
+  mask = label != 0
+
+  match = match & mask
+
+  match = tf.cast(match, dtype=tf.float32)
+  mask = tf.cast(mask, dtype=tf.float32)
+  return tf.reduce_sum(match)/tf.reduce_sum(mask)
 
 num_layers = 4
 d_model = 128
@@ -581,7 +725,10 @@ num_heads = 8
 dropout_rate = 0.1
 
 if os.path.exists(saved_model_path):
-    transformer = tf.keras.models.load_model(saved_model_path, custom_objects={'Transformer': Transformer, 'CustomSchedule':CustomSchedule})
+    transformer = tf.keras.models.load_model(saved_model_path, custom_objects={'Transformer': Transformer, 
+                                                                               'CustomSchedule':CustomSchedule,
+                                                                               'masked_accuracy':masked_accuracy,
+                                                                               'masked_loss': masked_loss})
 elif os.path.exists(saved_weights_path):
     transformer = Transformer(
         num_layers=num_layers,
@@ -624,31 +771,7 @@ plt.plot(learning_rate(tf.range(40000, dtype=tf.float32)))
 plt.ylabel('Learning Rate')
 plt.xlabel('Train Step')
 
-def masked_loss(label, pred):
-  mask = label != 0
-  loss_object = tf.keras.losses.SparseCategoricalCrossentropy(
-    from_logits=True, reduction='none')
-  loss = loss_object(label, pred)
 
-  mask = tf.cast(mask, dtype=loss.dtype)
-  loss *= mask
-
-  loss = tf.reduce_sum(loss)/tf.reduce_sum(mask)
-  return loss
-
-
-def masked_accuracy(label, pred):
-  pred = tf.argmax(pred, axis=2)
-  label = tf.cast(label, pred.dtype)
-  match = label == pred
-
-  mask = label != 0
-
-  match = match & mask
-
-  match = tf.cast(match, dtype=tf.float32)
-  mask = tf.cast(mask, dtype=tf.float32)
-  return tf.reduce_sum(match)/tf.reduce_sum(mask)
 
 transformer.compile(
     loss=masked_loss,
@@ -660,7 +783,7 @@ transformer.fit(train_batches,
                 validation_data=val_batches)
 
 transformer.save_weights(saved_weights_path)
-transformer.save(saved_model_path)
+tf.keras.models.save_model(transformer, filepath=saved_model_path)
 print(f"weights saved to {saved_weights_path}.")
 print(f"model saved to {saved_model_path}.")
 
